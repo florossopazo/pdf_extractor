@@ -1,41 +1,27 @@
-from PyPDF2 import PdfReader
-import pytesseract
-from pytesseract import Output
-import xlsxwriter
-import re 
+"""This is a module"""
+import time
 from datetime import date
-from dateutil.parser import *
+import os
+from typing import List
+from PyPDF2 import PdfReader
+#import pytesseract
+#from pytesseract import Output
+#from dateutil.parser import *
 import pandas
-import datefinder
 import ollama
 from ollama import chat
-from ollama import ChatResponse
-import cv2
-import os
 import ocrmypdf
-import subprocess
-import json
-import time
 from pydantic import BaseModel
-from test.support._hypothesis_stubs import strategies
-from cv2.gapi import streaming
-import string 
-from typing import List
-from pickle import FALSE
 
-
-schema = '''{
-    issue_date: string
-    expiry_date: string
-    document_type: string
-    }'''
 
 class Pdf(BaseModel):
+    """Class representing a PDF"""
     issue_date: date
     expiry_date: date
     document_type: str
     
 class PdfList(BaseModel):
+    """Class representing a List of PDFs"""
     pdfs: List[Pdf]
         
 
@@ -56,7 +42,7 @@ def extract_text_from_pdf(pdf_file_path):
         return text
     
 def ocr_pdf(pdf_path, ocr_output_path):
-    # OCRs a PDF using OCRmyPDF
+    """OCR no-text PDF using ocrmypdf"""
     has_text = bool(extract_text_from_pdf(pdf_path))
     
     try:
@@ -72,7 +58,8 @@ def ocr_pdf(pdf_path, ocr_output_path):
                 deskew=True,
                 clean_final=True,
                 remove_background=False,
-                invalidate_digital_signatures=True
+                invalidate_digital_signatures=True,
+                pages="1-3"
             )
         else: 
             process_pdf_safely(pdf_path, ocr_output_path)
@@ -82,6 +69,7 @@ def ocr_pdf(pdf_path, ocr_output_path):
         return False
      
 def process_pdf_safely(pdf_path, ocr_output_path):
+    """OCR PDF with text using ocrmypdf"""
     try:
         # First try with redo_ocr enabled (most efficient)
         ocrmypdf.ocr(
@@ -96,7 +84,8 @@ def process_pdf_safely(pdf_path, ocr_output_path):
             deskew=False,
             clean_final=False,
             remove_background=False,
-            invalidate_digital_signatures=True
+            invalidate_digital_signatures=True,
+            pages="1-3"
         )
         print("Successfully processed with redo_ocr")
     except ocrmypdf.exceptions.PriorOcrFoundError:
@@ -111,20 +100,21 @@ def process_pdf_safely(pdf_path, ocr_output_path):
             progress_bar=False,
             # Can use preprocessing features here
             deskew=True,
-            clean_final=True,
+            clean_final=True, # Uses unpaper
             remove_background=False,  # Still often problematic :(
-            invalidate_digital_signatures=True
+            invalidate_digital_signatures=True,
+            pages="1-3"
         )
     
 def pdf_to_text(input_dir, output_dir):
-    
+    """Extracts text from a PDF with ocrmypdf (can process images) and PyPDF2 (only text, as backup)"""
     if not os.path.exists(output_dir):
         os.makedirs(output_dir)
     
     for filename in os.listdir(input_dir):
         if filename.endswith('.pdf'):
             pdf_path = os.path.join(input_dir, filename) # Input PDF
-            ocr_output_path = os.path.join(input_dir, f"ocr_{filename}") # OCR'd output
+            ocr_output_path = os.path.join(input_dir, f"ocr_{filename}") # Intermediate OCR'd output
             text_output_path = os.path.join(output_dir, f"{os.path.splitext(filename)[0]}.txt") # Final text output
             
             # STEP 1: Extract text using PyPDF2
@@ -143,15 +133,15 @@ def pdf_to_text(input_dir, output_dir):
                 if ocr_success:
                     extracted_text = extract_text_from_pdf(ocr_output_path)
                 
-                # Write output file
+                # Write to output txt file
                 with open(text_output_path, 'w', encoding='utf-8') as text_file:
                     filetitle = filename.removesuffix(".pdf")
                     text_file.write(f"{filetitle}\n")
                     text_file.write(extracted_text)
                     
             except Exception as e:
-                print(f"Something went wrong: {e}")  
-                
+                print(f"Something went wrong: {e}")
+
             finally:
                 # Clean up OCR temp file if it exists
                 if os.path.exists(ocr_output_path):
@@ -159,8 +149,9 @@ def pdf_to_text(input_dir, output_dir):
             
     
 def text_to_json(text_input_dir):
-    # Iterates over each file in the directory and queries local model about each one
+    """Iterates over each txt file in the directory and queries local model about each one"""
     print("We are in the function text_to_json.\n")
+    # An empty list
     all_pdfs = []
     for filename in os.listdir(text_input_dir):
         if filename.endswith('.txt'):
@@ -191,14 +182,15 @@ def text_to_json(text_input_dir):
                     Country of Origin, Recall Plan, Product Recall, Emergency Contacts, Letter of Compliance, 
                     Pesticide Statement, Ethical Policy, Ethical Statement, Non-GMO Statement, Food Defense Plan, 
                     Food Defense Statement, Food Fraud Statement, Food Fraud Plan, Bioterrorism Statement, 
-                    TACCP, Code of Conduct, Lot Code Statement, Lot Code Explanation, etc. If the document is not of any recognizable type, the 'document_type' 
+                    TACCP, Code of Conduct, Lot Code Statement, Lot Code Explanation, Batch Numbering Explanation, Quality Agreement
+                    etc. If the document is not of any recognizable type, the 'document_type' 
                     output value should be the title of the text file. Please fill in these key-value pairs \n
                     {\n\"issue_date\": , \n\"expiry_date\": , \n\"document_type\": \n} 
                     \nwith information from the following text, and output the answer in valid JSON object literal format:\n
                 """
                 prompt += f"{filetitle}\n{file_content}"
                 
-                
+                # Response from local LLM
                 response = chat(
                     model='qwen2.5:7b',
                     messages=[{'role': 'user', 'content': prompt}],
@@ -210,22 +202,21 @@ def text_to_json(text_input_dir):
                 print(pdf_data)
                 all_pdfs.extend(pdf_data.pdfs)
                 
-                
                 # Delay to prevent overload of computer or local model
                 print("\nWe will now wait for 10 seconds...")
                 time.sleep(10)
-                #temp = json.loads(result.message.content)
-                
+
+    # Create dataframe      
     pdf_dicts = [pdf.model_dump() for pdf in all_pdfs]  # Pydantic v2 (or .dict() for v1)
     df = pandas.DataFrame(pdf_dicts)
     
-    # Export to Excel sheet
+    # Export dataframe to Excel sheet
     df.to_excel("all_certificates.xlsx", index=False)
     
     
 if __name__ == "__main__":
-    input_dir = "C:/Users/sfs/Downloads/DeepSeek Training Documents/Test"
-    output_dir = "C:/Users/sfs/Documents/DeepSeek_Text_Files"
+    input_dir = "C:/Users/sfs/Downloads/pdf_extractor_input/Test"
+    output_dir = "C:/Users/sfs/Documents/pdf_extractor_output"
     #print(input_dir)
     #print(output_dir)
     
